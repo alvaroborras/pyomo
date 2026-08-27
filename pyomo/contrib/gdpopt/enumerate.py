@@ -7,7 +7,9 @@
 # software.  This software is distributed under the 3-clause BSD License.
 # ____________________________________________________________________________________
 
+import math
 from itertools import product
+from operator import index
 
 from pyomo.common.collections import ComponentSet
 from pyomo.common.config import document_kwargs_from_configdict
@@ -110,8 +112,6 @@ class GDP_Enumeration_Solver(_GDPoptAlgorithm):
         )
 
     def _solve_gdp(self, original_model, config):
-        logger = config.logger
-
         util_block = self.original_util_block
         # From preprocessing to make sure this *is* a GDP, we already have
         # lists of:
@@ -124,19 +124,30 @@ class GDP_Enumeration_Solver(_GDPoptAlgorithm):
 
         subproblem, subproblem_util_block = get_subproblem(original_model, util_block)
 
-        discrete_solns = list(
-            self._discrete_solution_iterator(
-                subproblem_util_block.disjunction_list,
-                subproblem_util_block.non_indicator_boolean_variable_list,
-                subproblem_util_block.discrete_variable_list,
-                config,
-            )
+        disjunctions = subproblem_util_block.disjunction_list
+        non_indicator_boolean_vars = (
+            subproblem_util_block.non_indicator_boolean_variable_list
         )
-        self.num_discrete_solns = len(discrete_solns)
-        for soln in discrete_solns:
-            # We will interrupt based on time limit or iteration limit:
+        discrete_vars = subproblem_util_block.discrete_variable_list
+
+        self.num_discrete_solns = math.prod(
+            len(disjunction.disjuncts) for disjunction in disjunctions
+        )
+        if config.force_subproblem_nlp:
+            self.num_discrete_solns *= 2 ** len(non_indicator_boolean_vars) * math.prod(
+                max(0, index(v.ub) - index(v.lb) + 1) for v in discrete_vars
+            )
+
+        if self.reached_time_limit(config) or self.reached_iteration_limit(config):
+            return
+        discrete_solns = self._discrete_solution_iterator(
+            disjunctions, non_indicator_boolean_vars, discrete_vars, config
+        )
+        for _ in range(self.num_discrete_solns):
             if self.reached_time_limit(config) or self.reached_iteration_limit(config):
-                break
+                return
+            soln = next(discrete_solns)
+
             self.iteration += 1
 
             with time_code(self.timing, 'nlp'):
@@ -159,26 +170,23 @@ class GDP_Enumeration_Solver(_GDPoptAlgorithm):
                         # the whole problem is unbounded, we can stop
                         self._update_primal_bound_to_unbounded(config)
                         self._log_current_state(config.logger, 'subproblem', True)
-                        break
+                        return
 
                     else:
                         # Just log where we are
                         self._log_current_state(config.logger, 'subproblem')
 
-            if self.iteration == self.num_discrete_solns:
-                # We can terminate optimally or declare infeasibility: We have
-                # enumerated all solutions, so our incumbent is optimal (or
-                # locally optimal, depending on how we solved the subproblems)
-                # if it exists, and if not then there is no solution.
-                if self.incumbent_boolean_soln is None:
-                    self._update_dual_bound_to_infeasible()
-                    self._load_infeasible_termination_status(config)
-                else:  # the incumbent is optimal
-                    self._update_bounds(dual=self.primal_bound(), force_update=True)
-                    self._log_current_state(config.logger, '')
-                    config.logger.info(
-                        'GDPopt exiting--all discrete solutions have been '
-                        'enumerated.'
-                    )
-                    self.pyomo_results.solver.termination_condition = tc.optimal
-                    break
+        # We can terminate optimally or declare infeasibility: We have
+        # enumerated all solutions, so our incumbent is optimal (or
+        # locally optimal, depending on how we solved the subproblems)
+        # if it exists, and if not then there is no solution.
+        if self.incumbent_boolean_soln is None:
+            self._update_dual_bound_to_infeasible()
+            self._load_infeasible_termination_status(config)
+        else:  # the incumbent is optimal
+            self._update_bounds(dual=self.primal_bound(), force_update=True)
+            self._log_current_state(config.logger, '')
+            config.logger.info(
+                'GDPopt exiting--all discrete solutions have been enumerated.'
+            )
+            self.pyomo_results.solver.termination_condition = tc.optimal

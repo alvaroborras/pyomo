@@ -25,6 +25,58 @@ from pyomo.gdp import Disjunction
 import pyomo.gdp.tests.models as models
 
 
+class _ExpiredEnumerationSolver(GDP_Enumeration_Solver):
+    """Enumeration solver that enters its GDP solve after the time limit."""
+
+    def _solve_gdp(self, original_model, config):
+        """Expire the active timer before running the real GDP solve."""
+        self.timing.main_timer_start_time -= config.time_limit
+        return super()._solve_gdp(original_model, config)
+
+    def _discrete_solution_iterator(self, *args):
+        """Fail instead of requesting a discrete solution."""
+        raise AssertionError('discrete solutions were enumerated')
+
+
+class TestGDPoptEnumerateUnit(unittest.TestCase):
+    def test_large_space_not_enumerated_after_time_limit(self):
+        m = ConcreteModel()
+        m.x = Var(bounds=(-1, 1))
+        m.i = Var(domain=Integers, bounds=(0, 10**20))
+        m.obj = Objective(expr=m.x + m.i)
+
+        def disjunction_rule(m, _):
+            return [[m.x <= 0], [m.x >= 0]]
+
+        m.disjunctions = Disjunction(range(32), rule=disjunction_rule)
+        solver = _ExpiredEnumerationSolver()
+        results = solver.solve(m, force_subproblem_nlp=True, time_limit=1)
+
+        self.assertEqual(solver.num_discrete_solns, 2**32 * (10**20 + 1))
+        self.assertEqual(
+            results.solver.termination_condition, TerminationCondition.maxTimeLimit
+        )
+
+    def test_completion_and_solver_reuse(self):
+        solver = GDP_Enumeration_Solver()
+        for num_disjuncts, expected_iterations, options in (
+            (2, 2, {'iterlim': 2}),
+            (3, 5, {}),
+        ):
+            m = ConcreteModel()
+            m.disjunction = Disjunction(
+                expr=[[Constraint.Infeasible] for _ in range(num_disjuncts)]
+            )
+            m.obj = Objective(expr=0)
+
+            results = solver.solve(m, **options)
+
+            self.assertEqual(results.solver.iterations, expected_iterations)
+            self.assertEqual(
+                results.solver.termination_condition, TerminationCondition.infeasible
+            )
+
+
 @unittest.skipUnless(SolverFactory('gurobi').available(), 'Gurobi not available')
 @unittest.skipUnless(SolverFactory('gurobi').license_is_valid(), 'Gurobi not licensed')
 class TestGDPoptEnumerate(unittest.TestCase):
