@@ -52,7 +52,6 @@ class TestGDPoptEnumerateUnit(unittest.TestCase):
         solver = _ExpiredEnumerationSolver()
         results = solver.solve(m, force_subproblem_nlp=True, time_limit=1)
 
-        self.assertEqual(solver.num_discrete_solns, 2**32 * (10**20 + 1))
         self.assertEqual(
             results.solver.termination_condition, TerminationCondition.maxTimeLimit
         )

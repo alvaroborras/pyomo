@@ -7,9 +7,7 @@
 # software.  This software is distributed under the 3-clause BSD License.
 # ____________________________________________________________________________________
 
-import math
 from itertools import product
-from operator import index
 
 from pyomo.common.collections import ComponentSet
 from pyomo.common.config import document_kwargs_from_configdict
@@ -29,11 +27,7 @@ from pyomo.contrib.gdpopt.create_oa_subproblems import (
     get_subproblem,
 )
 from pyomo.contrib.gdpopt.solve_subproblem import solve_subproblem
-from pyomo.contrib.gdpopt.util import (
-    fix_discrete_solution_in_subproblem,
-    time_code,
-    get_main_elapsed_time,
-)
+from pyomo.contrib.gdpopt.util import fix_discrete_solution_in_subproblem, time_code
 
 from pyomo.core import value
 from pyomo.opt import TerminationCondition as tc
@@ -95,22 +89,6 @@ class GDP_Enumeration_Solver(_GDPoptAlgorithm):
                             integer_realization,
                         )
 
-    # Override logging so that we print progress in terms of the number of
-    # iterations needed to fully enumerate the discrete space.
-    def _log_current_state(self, logger, subproblem_type, primal_improved=False):
-        star = "*" if primal_improved else ""
-        logger.info(
-            self.log_formatter.format(
-                "{}/{}".format(self.iteration, self.num_discrete_solns),
-                subproblem_type,
-                self.LB,
-                self.UB,
-                self.relative_gap(),
-                get_main_elapsed_time(self.timing),
-                star,
-            )
-        )
-
     def _solve_gdp(self, original_model, config):
         util_block = self.original_util_block
         # From preprocessing to make sure this *is* a GDP, we already have
@@ -124,29 +102,16 @@ class GDP_Enumeration_Solver(_GDPoptAlgorithm):
 
         subproblem, subproblem_util_block = get_subproblem(original_model, util_block)
 
-        disjunctions = subproblem_util_block.disjunction_list
-        non_indicator_boolean_vars = (
-            subproblem_util_block.non_indicator_boolean_variable_list
-        )
-        discrete_vars = subproblem_util_block.discrete_variable_list
-
-        self.num_discrete_solns = math.prod(
-            len(disjunction.disjuncts) for disjunction in disjunctions
-        )
-        if config.force_subproblem_nlp:
-            self.num_discrete_solns *= 2 ** len(non_indicator_boolean_vars) * math.prod(
-                max(0, index(v.ub) - index(v.lb) + 1) for v in discrete_vars
-            )
-
         if self.reached_time_limit(config) or self.reached_iteration_limit(config):
             return
-        discrete_solns = self._discrete_solution_iterator(
-            disjunctions, non_indicator_boolean_vars, discrete_vars, config
-        )
-        for _ in range(self.num_discrete_solns):
+        for soln in self._discrete_solution_iterator(
+            subproblem_util_block.disjunction_list,
+            subproblem_util_block.non_indicator_boolean_variable_list,
+            subproblem_util_block.discrete_variable_list,
+            config,
+        ):
             if self.reached_time_limit(config) or self.reached_iteration_limit(config):
                 return
-            soln = next(discrete_solns)
 
             self.iteration += 1
 
