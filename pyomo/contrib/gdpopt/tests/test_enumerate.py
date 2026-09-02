@@ -42,7 +42,7 @@ class TestGDPoptEnumerateUnit(unittest.TestCase):
     def test_large_space_not_enumerated_after_time_limit(self):
         m = ConcreteModel()
         m.x = Var(bounds=(-1, 1))
-        m.i = Var(domain=Integers, bounds=(0, 10**20))
+        m.i = Var(domain=Integers, bounds=(0.5, 10**20))
         m.obj = Objective(expr=m.x + m.i)
 
         def disjunction_rule(m, _):
@@ -52,28 +52,33 @@ class TestGDPoptEnumerateUnit(unittest.TestCase):
         solver = _ExpiredEnumerationSolver()
         results = solver.solve(m, force_subproblem_nlp=True, time_limit=1)
 
+        self.assertEqual(solver.num_discrete_solns, 2**32 * 10**20)
         self.assertEqual(
             results.solver.termination_condition, TerminationCondition.maxTimeLimit
         )
 
-    def test_completion_and_solver_reuse(self):
-        solver = GDP_Enumeration_Solver()
-        for num_disjuncts, expected_iterations, options in (
-            (2, 2, {'iterlim': 2}),
-            (3, 5, {}),
-        ):
-            m = ConcreteModel()
-            m.disjunction = Disjunction(
-                expr=[[Constraint.Infeasible] for _ in range(num_disjuncts)]
-            )
-            m.obj = Objective(expr=0)
+    def test_noninteger_integer_bounds(self):
+        m = ConcreteModel()
+        m.i = Var(domain=Integers, bounds=(0.5, 3.5))
+        solver = GDP_Enumeration_Solver(force_subproblem_nlp=True)
 
-            results = solver.solve(m, **options)
+        solutions = solver._discrete_solution_iterator([], [], [m.i], solver.config)
 
-            self.assertEqual(results.solver.iterations, expected_iterations)
-            self.assertEqual(
-                results.solver.termination_condition, TerminationCondition.infeasible
-            )
+        self.assertEqual([solution[2] for solution in solutions], [(1,), (2,), (3,)])
+
+    def test_completion(self):
+        m = ConcreteModel()
+        m.disjunction = Disjunction(
+            expr=[[Constraint.Infeasible], [Constraint.Infeasible]]
+        )
+        m.obj = Objective(expr=0)
+
+        results = GDP_Enumeration_Solver().solve(m, iterlim=2)
+
+        self.assertEqual(results.solver.iterations, 2)
+        self.assertEqual(
+            results.solver.termination_condition, TerminationCondition.infeasible
+        )
 
 
 @unittest.skipUnless(SolverFactory('gurobi').available(), 'Gurobi not available')
